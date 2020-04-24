@@ -2,7 +2,7 @@
 // 将table1读入内存，建立index。建立unordered_multimap，key为id3，value为Row*。
 // 如果table1比table2大，那么交换两个file_name。是为了在内存中建立比较小的那个表的map。
 
-// 然后顺序扫描table2，若t2.id3存在table1的index中，则将pair<Row*,Row*>加入join的结果vector中。后续不变。运行时间776毫秒。下降了。
+// 第一种方法。然后顺序扫描table2，若t2.id3存在table1的index中，则将pair<Row*,Row*>加入join的结果vector中。后续不变。运行时间776毫秒。下降了。
 // 第二种方法。顺序扫描table2，但是后续不使用sort进行group。而是采用map，key为group by的两个值组成的pair，value为Group*。这样table2的row如果和table1的row符合join谓语，那么这两个row是会放在一个group中的，直接计算是哪一个group（map key），更新Group*里面的max(t1.id1), min(t2.id1)。649毫秒，还是没有直接sort的结果好。
 
 // 最后还是将Group*序列按照t1_id1进行排序。因为Group* 已经按照group by 的那两个列排完序了。
@@ -36,13 +36,8 @@ struct Group {
     int t2_id1;
 };
 
-struct SortByComparator {
-    bool operator()(const Group *group1, const Group *group2) const {
-        return group1->t1_id1 < group2->t1_id1;
-    }
-};
-
-std::unordered_multimap<int, Row *> read_rows(std::string filename) {
+// 从csv文件读取每一行数据，建立id3的索引。id3可以不用存在Row中。
+std::unordered_multimap<int, Row *> read_rows_and_build_index(std::string filename) {
     std::unordered_multimap<int, Row *> res;
     std::ifstream fin(filename);
     char c;
@@ -51,6 +46,7 @@ std::unordered_multimap<int, Row *> read_rows(std::string filename) {
         if (fin >> row->id1 >> c >> row->id2 >> c >> row->id3) {
             res.insert({row->id3, row});
         } else {
+            delete row;
             break;
         }
     }
@@ -67,11 +63,11 @@ struct GroupComparator {
     }
 };
 
-std::map<std::pair<int, int>, Group *, GroupComparator> join(std::string file1_name, std::string file2_name) {
+std::vector<Group *> join_and_group(std::string file1_name, std::string file2_name) {
 #ifdef DEBUG
     auto read_rows_begin = std::chrono::high_resolution_clock::now();
 #endif
-    auto t1_rows_map = read_rows(file1_name);
+    auto t1_rows_index = read_rows_and_build_index(file1_name);
 
 #ifdef DEBUG
     auto read_rows_end = std::chrono::high_resolution_clock::now();
@@ -90,7 +86,7 @@ std::map<std::pair<int, int>, Group *, GroupComparator> join(std::string file1_n
     int t2_id1, t2_id2, t2_id3;
     while (!fin2.eof()) {
         if (fin2 >> t2_id1 >> c >> t2_id2 >> c >> t2_id3) {
-            auto range = t1_rows_map.equal_range(t2_id3);
+            auto range = t1_rows_index.equal_range(t2_id3);
             if (range.first != range.second) {
                 for (auto range_it = range.first; range_it != range.second; range_it++) {
                     auto find_it = group_map.find(std::make_pair(range_it->second->id2, t2_id2));
@@ -116,7 +112,12 @@ std::map<std::pair<int, int>, Group *, GroupComparator> join(std::string file1_n
     std::cout << "-----merge join: "
               << duration.count() << " milliseconds" << std::endl;
 #endif
-    return group_map;
+
+    std::vector<Group *> groups;
+    for (auto it = group_map.begin(); it != group_map.end(); it++) {
+        groups.push_back((*it).second);
+    }
+    return groups;
 }
 
 std::vector<Group *> group(std::map<std::pair<int, int>, Group *, GroupComparator> &group_map) {
@@ -128,10 +129,17 @@ std::vector<Group *> group(std::map<std::pair<int, int>, Group *, GroupComparato
     return groups;
 }
 
+// sort 只比较 t1_id1。因为sort之前已经按照 group by 的那两个column有序了。
+struct SortByComparator {
+    bool operator()(const Group *group1, const Group *group2) const {
+        return group1->t1_id1 < group2->t1_id1;
+    }
+};
+
 int main() {
 #ifdef DEBUG
-    std::string file1_name = "input3.csv";
-    std::string file2_name = "input4.csv";
+    std::string file1_name = "input1.csv";
+    std::string file2_name = "input2.csv";
 #else
     std::string file1_name = "/home/web/ztedatabase/input1.csv";
     std::string file2_name = "/home/web/ztedatabase/input2.csv";
@@ -143,28 +151,15 @@ int main() {
     // join
     std::ifstream fin1(file1_name, std::ios::ate);
     std::ifstream fin2(file2_name, std::ios::ate);
-    if (fin1.tellg() > fin2.tellg()) {
+    if (fin1.tellg() > fin2.tellg()) {  // 如果t1比较大，那么交换两个文件
         std::swap(file1_name, file2_name);
     }
-    auto join_rows = join(file1_name, file2_name);
+    auto groups = join_and_group(file1_name, file2_name);
 
 #ifdef DEBUG
     auto join_end = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(join_end - join_begin);
     std::cout << "Time join: "
-              << duration.count() << " milliseconds" << std::endl;
-#endif
-
-#ifdef DEBUG
-    auto group_begin = std::chrono::high_resolution_clock::now();
-#endif
-    // group
-    auto groups = group(join_rows);
-
-#ifdef DEBUG
-    auto group_end = std::chrono::high_resolution_clock::now();
-    duration = std::chrono::duration_cast<std::chrono::milliseconds>(group_end - group_begin);
-    std::cout << "Time group: "
               << duration.count() << " milliseconds" << std::endl;
 #endif
 
