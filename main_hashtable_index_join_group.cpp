@@ -53,7 +53,7 @@ std::unordered_multimap<int, Row *> read_rows_and_build_index(std::string filena
     return res;
 }
 
-struct GroupComparator {
+struct GroupKeyComparator {
     bool operator()(const std::pair<int, int> &p1, const std::pair<int, int> &p2) const {
         if (p1.second != p2.second) {
             return p1.second < p2.second;
@@ -80,7 +80,7 @@ std::vector<Group *> join_and_group(std::string file1_name, std::string file2_na
     auto merge_join_begin = std::chrono::high_resolution_clock::now();
 #endif
 
-    std::map<std::pair<int, int>, Group *, GroupComparator> group_map;
+    std::map<std::pair<int, int>, Group *, GroupKeyComparator> group_map;
     std::ifstream fin2(file2_name);
     char c;
     int t2_id1, t2_id2, t2_id3;
@@ -120,7 +120,7 @@ std::vector<Group *> join_and_group(std::string file1_name, std::string file2_na
     return groups;
 }
 
-std::vector<Group *> group(std::map<std::pair<int, int>, Group *, GroupComparator> &group_map) {
+std::vector<Group *> group(std::map<std::pair<int, int>, Group *, GroupKeyComparator> &group_map) {
     std::vector<Group *> groups;
     for (auto it = group_map.begin(); it != group_map.end(); it++) {
         groups.push_back((*it).second);
@@ -149,11 +149,11 @@ int main() {
     auto join_begin = std::chrono::high_resolution_clock::now();
 #endif
     // join
-    std::ifstream fin1(file1_name, std::ios::ate);
-    std::ifstream fin2(file2_name, std::ios::ate);
-    if (fin1.tellg() > fin2.tellg()) {  // 如果t1比较大，那么交换两个文件
-        std::swap(file1_name, file2_name);
-    }
+    // std::ifstream fin1(file1_name, std::ios::ate);
+    // std::ifstream fin2(file2_name, std::ios::ate);
+    // if (fin1.tellg() > fin2.tellg()) {  // 如果t1比较大，那么交换两个文件
+    //     std::swap(file1_name, file2_name);
+    // }
     auto groups = join_and_group(file1_name, file2_name);
 
 #ifdef DEBUG
