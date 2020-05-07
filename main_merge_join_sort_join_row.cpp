@@ -1,31 +1,20 @@
 // sort merge join
-// sort join row by t2_id2,t1_id2, then group
+// sort join_row by t2_id2,t1_id2, then group
 // group 已经按照 t2_id2,t1_id2 排序了，所以只用在 max(t1_id1) 上稳定排序就行
 
-// 占用内存很低，因为每个操作只把需要的字段存在内存，和当前操作无关的不读入内存。 但是需要读磁盘多次，所以速度较慢。
-// 结果为 2300毫秒
-// 已经在 group 读入id2的时候预先读入id1, 不用read_id1，减少读磁盘次数。 结果变为 1436毫秒
-// 预先读入两个table的所有row，再join等等。只有一遍读磁盘操作，所以速度更快了。变成 615毫秒
+// 第一种。占用内存很低，因为每个操作只把需要的字段存在内存，用文件内偏移位置表示一行记录，和当前操作无关的不读入内存。 但是需要读磁盘多次，所以速度较慢。结果为 2300毫秒
+// 第二种。已经在 group 读入id2的时候预先读入id1, 不用read_id1，减少读磁盘次数。 结果变为 1436毫秒
+// 第三种。预先读入两个table的所有row，再join等等。只有一遍读磁盘操作，所以速度更快了。变成 615毫秒。多刷几次，最好为588毫秒，最差为680毫秒
 
-// 里面涉及了三次排序，可能是需要改进的地方
+// 里面涉及了三次排序，是需要改进的地方。
 
 #include <algorithm>
-#include <chrono>
-#include <cmath>
-#include <cstdint>
-#include <cstdio>
 #include <fstream>
 #include <iostream>
-#include <limits>
 #include <map>
 #include <memory>
-#include <sstream>
-#include <string>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
-
-// #define DEBUG
 
 using JoinColmunType = int;
 
@@ -40,6 +29,7 @@ struct Group {
     int t2_id1;
 };
 
+// 迭代器前进，确定区间 [it_begin, it_end)
 void advance(std::vector<Row *>::iterator &it_begin,
              std::vector<Row *>::iterator &it_end,
              const std::vector<Row *>::iterator &vector_it_end) {
@@ -52,12 +42,14 @@ void advance(std::vector<Row *>::iterator &it_begin,
     }
 }
 
+// 按照id3排序
 struct SortMergeComparator {
     bool operator()(const Row *row1, const Row *row2) const {
         return row1->id3 < row2->id3;
     }
 };
 
+// jion. sort merge join.
 std::vector<std::pair<Row *, Row *>> sort_merge_join(std::vector<Row *> &left_relation,
                                                      std::vector<Row *> &right_relation) {
     std::vector<std::pair<Row *, Row *>> output;
@@ -99,21 +91,7 @@ std::vector<std::pair<Row *, Row *>> sort_merge_join(std::vector<Row *> &left_re
     return output;
 }
 
-struct GroupBySortComparator {
-    bool operator()(const std::pair<Row *, Row *> &pair1, const std::pair<Row *, Row *> &pair2) const {
-        if (pair1.second->id2 != pair2.second->id2) {
-            return pair1.second->id2 < pair2.second->id2;
-        } else {
-            return pair1.first->id2 < pair2.first->id2;
-        }
-    }
-};
-struct SortByComparator {
-    bool operator()(const Group *group1, const Group *group2) const {
-        return group1->t1_id1 < group2->t1_id1;
-    }
-};
-
+// 从csv文件读取每一行记录
 std::vector<Row *> read_rows(std::string filename) {
     std::vector<Row *> res;
     std::ifstream fin(filename);
@@ -130,35 +108,28 @@ std::vector<Row *> read_rows(std::string filename) {
 }
 
 std::vector<std::pair<Row *, Row *>> join(std::string file1_name, std::string file2_name) {
-#ifdef DEBUG
-    auto read_rows_begin = std::chrono::high_resolution_clock::now();
-#endif
     std::vector<Row *> t1_rows = read_rows(file1_name);
     std::vector<Row *> t2_rows = read_rows(file2_name);
 
-#ifdef DEBUG
-    auto read_rows_end = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(read_rows_end - read_rows_begin);
-    std::cout << "-----read_rows: "
-              << duration.count() << " milliseconds" << std::endl;
-#endif
-
-#ifdef DEBUG
-    auto merge_join_begin = std::chrono::high_resolution_clock::now();
-#endif
     std::vector<std::pair<Row *, Row *>> join_rows = sort_merge_join(t1_rows, t2_rows);
 
-#ifdef DEBUG
-    auto merge_join_end = std::chrono::high_resolution_clock::now();
-    duration = std::chrono::duration_cast<std::chrono::milliseconds>(merge_join_end - merge_join_begin);
-    std::cout << "-----merge join: "
-              << duration.count() << " milliseconds" << std::endl;
-#endif
     return join_rows;
 }
 
+// 按照 t2.id2, t1.id2 （group by 的反方向） 的顺序排列。因为sql查询语句中sort by 里面有这样的顺序。
+struct GroupBySortComparator {
+    bool operator()(const std::pair<Row *, Row *> &pair1, const std::pair<Row *, Row *> &pair2) const {
+        if (pair1.second->id2 != pair2.second->id2) {
+            return pair1.second->id2 < pair2.second->id2;
+        } else {
+            return pair1.first->id2 < pair2.first->id2;
+        }
+    }
+};
+
+// group. 按照group by的列排序，则同一个group相邻在一起，计算聚集函数。
 std::vector<Group *> group(std::vector<std::pair<Row *, Row *>> &join_rows) {
-    std::sort(join_rows.begin(), join_rows.end(), GroupBySortComparator());
+    std::sort(join_rows.begin(), join_rows.end(), GroupBySortComparator());  // 按照 t2.id2, t1.id2 （group by 的反方向） 的顺序排列
     std::vector<Group *> groups;
 
     // 读入第一个group row
@@ -174,11 +145,11 @@ std::vector<Group *> group(std::vector<std::pair<Row *, Row *>> &join_rows) {
     for (auto row_it = join_rows.begin() + 1; row_it != join_rows.end(); row_it++) {
         group_by_key1 = (*row_it).first->id2;
         group_by_key2 = (*row_it).second->id2;
-        if (group_by_key1 == group_by_key1_last && group_by_key2 == group_by_key2_last) {  // 同一个group
+        if (group_by_key1 == group_by_key1_last && group_by_key2 == group_by_key2_last) {  // 同一个group，更新聚集函数
             auto &group = groups.back();
             group->t1_id1 = std::max(group->t1_id1, (*row_it).first->id1);
             group->t2_id1 = std::min(group->t2_id1, (*row_it).second->id1);
-        } else {  // 不同group
+        } else {  // 不同group，添加新group
             auto group = new Group();
             group->t1_id1 = (*row_it).first->id1;
             group->t2_id1 = (*row_it).second->id1;
@@ -191,60 +162,25 @@ std::vector<Group *> group(std::vector<std::pair<Row *, Row *>> &join_rows) {
     return groups;
 }
 
+struct SortByComparator {
+    bool operator()(const Group *group1, const Group *group2) const {
+        return group1->t1_id1 < group2->t1_id1;
+    }
+};
+
 int main() {
-#ifdef DEBUG
-    std::string file1_name = "input3.csv";
-    std::string file2_name = "input4.csv";
-#else
     std::string file1_name = "/home/web/ztedatabase/input1.csv";
     std::string file2_name = "/home/web/ztedatabase/input2.csv";
-#endif
 
-#ifdef DEBUG
-    auto join_begin = std::chrono::high_resolution_clock::now();
-#endif
-    // join
     auto join_rows = join(file1_name, file2_name);
 
-#ifdef DEBUG
-    auto join_end = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(join_end - join_begin);
-    std::cout << "Time join: "
-              << duration.count() << " milliseconds" << std::endl;
-#endif
-
-#ifdef DEBUG
-    auto group_begin = std::chrono::high_resolution_clock::now();
-#endif
-    // group
     auto groups = group(join_rows);
 
-#ifdef DEBUG
-    auto group_end = std::chrono::high_resolution_clock::now();
-    duration = std::chrono::duration_cast<std::chrono::milliseconds>(group_end - group_begin);
-    std::cout << "Time group: "
-              << duration.count() << " milliseconds" << std::endl;
-#endif
+    std::stable_sort(groups.begin(), groups.end(), SortByComparator());  // 按照 max(t1.id1)排序。
 
-#ifdef DEBUG
-    auto sort_begin = std::chrono::high_resolution_clock::now();
-#endif
-    // sort
-    std::stable_sort(groups.begin(), groups.end(), SortByComparator());
-
-#ifdef DEBUG
-    auto sort_end = std::chrono::high_resolution_clock::now();
-    duration = std::chrono::duration_cast<std::chrono::milliseconds>(sort_end - sort_begin);
-    std::cout << "Time sort: "
-              << duration.count() << " milliseconds" << std::endl;
-#endif
-
-#ifndef DEBUG
-    // print result
     for (auto it = groups.begin(); it != groups.end(); it++) {
         std::cout << (*it)->t1_id1 << "," << (*it)->t2_id1 << std::endl;
     }
-#endif
 
     return 0;
 }
