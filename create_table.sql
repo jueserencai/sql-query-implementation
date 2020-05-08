@@ -6018,3 +6018,29 @@ VALUES
 (345,688,237);
 
 EXPLAIN  QUERY PLAN select max(t1.id1),min(t2.id1) from t1 join t2 on t1.id3 = t2.id3 group by t1.id2,t2.id2 order by max(t1.id1),t2.id2,t1.id2;
+
+
+CREATE TABLE t1 (
+	id1 int PRIMARY KEY,
+  	id2 int,
+  	id3 int
+);
+DECLARE @RowCount INT
+DECLARE @Random INT
+DECLARE @Upper INT
+DECLARE @Lower INT
+
+SET @Lower = -730
+SET @Upper = -1
+SET @RowCount = 0
+
+WHILE @RowCount < 10
+BEGIN
+	SET @RowCount = @RowCount + 1
+	SELECT @Random = ROUND(((@Upper - @Lower -1) * RAND() + @Lower), 0)
+	
+	INSERT INTO t1
+		(id1,id2,id3)
+	VALUES
+    	(@RowCount, ROUND(((@Upper - @Lower -1) * RAND() + @Lower), 0), ROUND(((@Upper - @Lower -1) * RAND() + @Lower), 0))
+END

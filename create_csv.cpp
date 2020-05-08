@@ -28,7 +28,7 @@ int main() {
     std::uniform_int_distribution<> rand_t2_id3(1, 1000); // define the range
 
     std::vector<std::vector<int>> t1_rows;
-    for (int i = 1; i <= 3000; i++) {
+    for (int i = 1; i <= 50000; i++) {
         std::vector<int> row;
         row.push_back(i);
         row.push_back(rand_t1_id2(eng));
@@ -42,7 +42,7 @@ int main() {
     }
 
     std::vector<std::vector<int>> t2_rows;
-    for (int i = 1; i <= 3000; i++) {
+    for (int i = 1; i <= 10000; i++) {
         std::vector<int> row;
         row.push_back(i);
         row.push_back(rand_t2_id2(eng));
